@@ -1,0 +1,124 @@
+---
+title: "ME315 Laboratório 2 - Processamento de Bases de Dados em Lote"
+author: "Jhuan Marcos Nunes Solis Silva (266349)"
+format: pdf
+editor: visual
+---
+
+## Pacotes utilizados
+
+```{r, message=FALSE, warning=FALSE}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggcal)
+```
+
+### 1. Estatísticas suficientes
+
+Queremos, para cada combinação de `dia`, `mês` e `Cia. Aérea`, o percentual de vôos com `ARRIVAL_DELAY > 10`. Isso é uma proporção, logo as estatísticas suficientes são apenas duas (por grupo):
+
+- `n`: número total de vôos do grupo;
+- `n_atraso`: número de vôos do grupo com `ARRIVAL_DELAY > 10`.
+
+O percentual final é obtido combinando os lotes por soma simples: `Perc = sum(n_atraso) / sum(n)`.
+
+### 2. Função `getStats`
+
+```{r}
+getStats <- function(input, pos) {
+  input %>%
+    filter(AIRLINE %in% c("AA", "DL", "UA", "US")) %>%
+    filter(!is.na(ARRIVAL_DELAY), !is.na(DAY), !is.na(MONTH)) %>%
+    group_by(DAY, MONTH, AIRLINE) %>%
+    summarise(n_atraso = sum(ARRIVAL_DELAY > 10),
+              n        = n(),
+              .groups  = "drop")
+}
+```
+
+### 3. Importação em lote com `read_csv_chunked`
+
+Lemos apenas as colunas necessárias (`MONTH`, `DAY`, `AIRLINE`, `ARRIVAL_DELAY`) via `col_types`, com lotes de 100 mil linhas.
+
+```{r}
+mycols <- cols_only(
+  MONTH         = "i",
+  DAY           = "i",
+  AIRLINE       = "c",
+  ARRIVAL_DELAY = "i"
+)
+
+stats_lotes <- read_csv_chunked(
+  "flights.csv",
+  callback   = DataFrameCallback$new(getStats),
+  chunk_size = 1e5,
+  col_types  = mycols
+)
+```
+
+```{r}
+stats_lotes
+```
+
+### 4. Função `computeStats`
+
+```{r}
+computeStats <- function(stats) {
+  stats %>%
+    group_by(Cia = AIRLINE, MONTH, DAY) %>%
+    summarise(n_atraso = sum(n_atraso),
+              n        = sum(n),
+              .groups  = "drop") %>%
+    mutate(Data = as.Date(paste(2015, MONTH, DAY, sep = "-")),
+           Perc = n_atraso / n) %>%
+    select(Cia, Data, Perc)
+}
+```
+
+```{r}
+resultado <- stats_lotes %>% computeStats()
+resultado
+```
+
+### 5. Mapa de calor em formato de calendário
+
+```{r}
+pal <- scale_fill_gradient(low = "#4575b4", high = "#d73027")
+```
+
+```{r}
+baseCalendario <- function(stats, cia) {
+  sub <- stats %>% filter(Cia == cia)
+  ggcal(sub$Data, sub$Perc)
+}
+```
+
+```{r}
+cAA <- baseCalendario(resultado, "AA")
+cDL <- baseCalendario(resultado, "DL")
+cUA <- baseCalendario(resultado, "UA")
+cUS <- baseCalendario(resultado, "US")
+```
+
+```{r}
+cAA + pal + ggtitle("Percentual de atraso na chegada - American Airlines")
+```
+
+```{r}
+cDL + pal + ggtitle("Percentual de atraso na chegada - Delta Air Lines")
+```
+
+```{r}
+cUA + pal + ggtitle("Percentual de atraso na chegada - United Airlines")
+```
+
+```{r}
+cUS + pal + ggtitle("Percentual de atraso na chegada - US Airways")
+```
+
+```{r}
+Sys.setenv(TZ = "America/Sao_Paulo")
+Sys.time()
+```

@@ -1,0 +1,273 @@
+---
+title: "Lab07_SQLite_jhuan"
+author: "Jhuan Marcos Nunes Solis Silva - 266349"
+format: pdf
+editor: source
+---
+
+### Atividade: SQLite - Parte II
+
+1.  Baixe o arquivo `uwmadison.sqlite3`. Armazene na variável `path` o caminho completo da pasta em que o banco de dados está salvo. Utilize `file.path()` para combinar `path` com o nome do arquivo e armazene o resultado em `fname`.
+
+```{r}
+path <- normalizePath(".", winslash = "/", mustWork = TRUE)
+
+fname <- file.path(path, "uwmadison.sqlite3")
+
+fname
+file.exists(fname)
+```
+
+Utilizando o pacote `RSQLite`, conecte-se ao arquivo de banco de dados e armazene a conexão na variável `conn`.
+
+```{r}
+library(DBI)
+library(RSQLite)
+
+conn <- dbConnect(SQLite(), fname)
+
+conn
+```
+
+Para confirmar que a conexão foi realizada corretamente, são listadas as tabelas existentes no banco de dados.
+
+```{r}
+dbListTables(conn)
+```
+
+2.  Quem são e quantos são os professores que lecionaram disciplinas cujo tópico era Estatística (`subjects.abbreviation = 'STAT'`)?
+
+Para localizar os professores, é necessário relacionar as tabelas `subjects`, `subject_memberships`, `course_offerings`, `sections`, `teachings` e `instructors`.
+
+```{sql connection=conn, max.print=400}
+SELECT DISTINCT
+  instructors.id AS ID_PROFESSOR,
+  instructors.name AS PROFESSOR
+FROM subjects
+INNER JOIN subject_memberships
+  ON subject_memberships.subject_code = subjects.code
+INNER JOIN course_offerings
+  ON course_offerings.uuid = subject_memberships.course_offering_uuid
+INNER JOIN sections
+  ON sections.course_offering_uuid = course_offerings.uuid
+INNER JOIN teachings
+  ON teachings.section_uuid = sections.uuid
+INNER JOIN instructors
+  ON instructors.id = teachings.instructor_id
+WHERE subjects.abbreviation = 'STAT'
+ORDER BY PROFESSOR, ID_PROFESSOR
+```
+
+A contagem é feita pelo identificador do professor, pois dois professores diferentes podem possuir o mesmo nome.
+
+```{sql connection=conn}
+SELECT
+  COUNT(*) AS TOTAL_PROFESSORES,
+  COUNT(DISTINCT PROFESSOR) AS TOTAL_NOMES_DISTINTOS
+FROM (
+  SELECT DISTINCT
+    instructors.id,
+    instructors.name AS PROFESSOR
+  FROM subjects
+  INNER JOIN subject_memberships
+    ON subject_memberships.subject_code = subjects.code
+  INNER JOIN course_offerings
+    ON course_offerings.uuid = subject_memberships.course_offering_uuid
+  INNER JOIN sections
+    ON sections.course_offering_uuid = course_offerings.uuid
+  INNER JOIN teachings
+    ON teachings.section_uuid = sections.uuid
+  INNER JOIN instructors
+    ON instructors.id = teachings.instructor_id
+  WHERE subjects.abbreviation = 'STAT'
+)
+```
+
+Foram encontrados **379 professores**, correspondentes a **377 nomes distintos**. A diferença ocorre porque os nomes `SHENG WANG` e `TIMOTHY IDOWU` aparecem, cada um, associados a dois identificadores diferentes.
+
+3.  O GPA americano é definido em uma escala de 0 a 4, em que A = 4, AB = 3,5, B = 3, BC = 2,5, C = 2, D = 1 e F = 0. Determine a nota média ponderada dos oferecimentos de disciplinas de Estatística e identifique os professores e as disciplinas mais difíceis e mais fáceis.
+
+Para uma oferta com contagens de alunos em cada conceito, o GPA ponderado é calculado por:
+
+$$
+\mathrm{GPA} = \frac{4n_A + 3{,}5n_{AB} + 3n_B + 2{,}5n_{BC} + 2n_C + n_D}{n_A + n_{AB} + n_B + n_{BC} + n_C + n_D + n_F}.
+$$
+
+Somente os conceitos A, AB, B, BC, C, D e F entram no cálculo, pois são os conceitos aos quais o enunciado atribui valores numéricos. As demais categorias da tabela `grade_distributions` não fazem parte do numerador nem do denominador.
+
+Primeiro, é criada uma *view* temporária com os pontos, o número de alunos avaliados e o GPA de cada oferta/seção de Estatística.
+
+```{r}
+dbExecute(conn, "DROP VIEW IF EXISTS gpa_stat_ofertas")
+
+dbExecute(
+  conn,
+  "CREATE TEMP VIEW gpa_stat_ofertas AS
+   SELECT DISTINCT
+     course_offerings.uuid AS COURSE_OFFERING_UUID,
+     course_offerings.course_uuid AS COURSE_UUID,
+     course_offerings.term_code AS TERM_CODE,
+     grade_distributions.section_number AS SECTION_NUMBER,
+     (
+       4.0 * COALESCE(grade_distributions.a_count, 0)  +
+       3.5 * COALESCE(grade_distributions.ab_count, 0) +
+       3.0 * COALESCE(grade_distributions.b_count, 0)  +
+       2.5 * COALESCE(grade_distributions.bc_count, 0) +
+       2.0 * COALESCE(grade_distributions.c_count, 0)  +
+       1.0 * COALESCE(grade_distributions.d_count, 0)
+     ) AS PONTOS,
+     (
+       COALESCE(grade_distributions.a_count, 0)  +
+       COALESCE(grade_distributions.ab_count, 0) +
+       COALESCE(grade_distributions.b_count, 0)  +
+       COALESCE(grade_distributions.bc_count, 0) +
+       COALESCE(grade_distributions.c_count, 0)  +
+       COALESCE(grade_distributions.d_count, 0)  +
+       COALESCE(grade_distributions.f_count, 0)
+     ) AS N_ALUNOS,
+     (
+       4.0 * COALESCE(grade_distributions.a_count, 0)  +
+       3.5 * COALESCE(grade_distributions.ab_count, 0) +
+       3.0 * COALESCE(grade_distributions.b_count, 0)  +
+       2.5 * COALESCE(grade_distributions.bc_count, 0) +
+       2.0 * COALESCE(grade_distributions.c_count, 0)  +
+       1.0 * COALESCE(grade_distributions.d_count, 0)
+     ) * 1.0 /
+     (
+       COALESCE(grade_distributions.a_count, 0)  +
+       COALESCE(grade_distributions.ab_count, 0) +
+       COALESCE(grade_distributions.b_count, 0)  +
+       COALESCE(grade_distributions.bc_count, 0) +
+       COALESCE(grade_distributions.c_count, 0)  +
+       COALESCE(grade_distributions.d_count, 0)  +
+       COALESCE(grade_distributions.f_count, 0)
+     ) AS GPA_OFERTA
+   FROM subjects
+   INNER JOIN subject_memberships
+     ON subject_memberships.subject_code = subjects.code
+   INNER JOIN course_offerings
+     ON course_offerings.uuid = subject_memberships.course_offering_uuid
+   INNER JOIN grade_distributions
+     ON grade_distributions.course_offering_uuid = course_offerings.uuid
+   WHERE subjects.abbreviation = 'STAT'
+     AND (
+       COALESCE(grade_distributions.a_count, 0)  +
+       COALESCE(grade_distributions.ab_count, 0) +
+       COALESCE(grade_distributions.b_count, 0)  +
+       COALESCE(grade_distributions.bc_count, 0) +
+       COALESCE(grade_distributions.c_count, 0)  +
+       COALESCE(grade_distributions.d_count, 0)  +
+       COALESCE(grade_distributions.f_count, 0)
+     ) > 0"
+)
+```
+
+**a) Quem é o professor mais difícil e quem é o professor mais fácil?**
+
+Para comparar os professores, é calculada a média dos GPAs dos oferecimentos que cada professor lecionou. Dessa forma, cada oferecimento possui o mesmo peso na comparação.
+
+```{sql connection=conn}
+WITH RESUMO_PROFESSORES AS (
+  SELECT
+    instructors.id AS ID_PROFESSOR,
+    instructors.name AS PROFESSOR,
+    AVG(gpa_stat_ofertas.GPA_OFERTA) AS GPA,
+    SUM(gpa_stat_ofertas.N_ALUNOS) AS TOTAL_ALUNOS,
+    COUNT(*) AS TOTAL_OFERTAS
+  FROM gpa_stat_ofertas
+  INNER JOIN sections
+    ON sections.course_offering_uuid =
+       gpa_stat_ofertas.COURSE_OFFERING_UUID
+   AND CAST(sections.number AS INTEGER) =
+       gpa_stat_ofertas.SECTION_NUMBER
+  INNER JOIN teachings
+    ON teachings.section_uuid = sections.uuid
+  INNER JOIN instructors
+    ON instructors.id = teachings.instructor_id
+  GROUP BY instructors.id, instructors.name
+),
+LIMITES AS (
+  SELECT MIN(GPA) AS GPA_MIN, MAX(GPA) AS GPA_MAX
+  FROM RESUMO_PROFESSORES
+)
+SELECT
+  CASE
+    WHEN RESUMO_PROFESSORES.GPA = LIMITES.GPA_MIN
+      THEN 'Mais difícil'
+    ELSE 'Mais fácil'
+  END AS CLASSIFICACAO,
+  RESUMO_PROFESSORES.ID_PROFESSOR,
+  RESUMO_PROFESSORES.PROFESSOR,
+  ROUND(RESUMO_PROFESSORES.GPA, 4) AS GPA,
+  RESUMO_PROFESSORES.TOTAL_ALUNOS,
+  RESUMO_PROFESSORES.TOTAL_OFERTAS
+FROM RESUMO_PROFESSORES
+CROSS JOIN LIMITES
+WHERE RESUMO_PROFESSORES.GPA = LIMITES.GPA_MIN
+   OR RESUMO_PROFESSORES.GPA = LIMITES.GPA_MAX
+ORDER BY GPA, PROFESSOR
+```
+
+O professor com menor GPA ponderado é **JAMES D KUELBS**, com GPA igual a **2,6375**. O maior GPA é **4,0000**, com empate entre **GUANHUA CHEN**, **SRIKANTHMADHAVAN ARAVAMUTHAN** e **YAJUAN SI**. Portanto, os três são classificados como professores mais fáceis pelo critério adotado.
+
+**b) Qual é a disciplina mais difícil e qual é a disciplina mais fácil?**
+
+Para comparar as disciplinas, é calculada a média dos GPAs de todos os seus oferecimentos. Assim, cada oferecimento possui o mesmo peso na comparação.
+
+```{sql connection=conn}
+WITH RESUMO_DISCIPLINAS AS (
+  SELECT
+    courses.uuid AS COURSE_UUID,
+    courses.number AS NUMERO,
+    courses.name AS DISCIPLINA,
+    AVG(gpa_stat_ofertas.GPA_OFERTA) AS GPA,
+    SUM(gpa_stat_ofertas.N_ALUNOS) AS TOTAL_ALUNOS,
+    COUNT(*) AS TOTAL_OFERTAS
+  FROM gpa_stat_ofertas
+  INNER JOIN courses
+    ON courses.uuid = gpa_stat_ofertas.COURSE_UUID
+  GROUP BY courses.uuid, courses.number, courses.name
+),
+LIMITES AS (
+  SELECT MIN(GPA) AS GPA_MIN, MAX(GPA) AS GPA_MAX
+  FROM RESUMO_DISCIPLINAS
+)
+SELECT
+  CASE
+    WHEN RESUMO_DISCIPLINAS.GPA = LIMITES.GPA_MIN
+      THEN 'Mais difícil'
+    ELSE 'Mais fácil'
+  END AS CLASSIFICACAO,
+  RESUMO_DISCIPLINAS.NUMERO,
+  RESUMO_DISCIPLINAS.DISCIPLINA,
+  ROUND(RESUMO_DISCIPLINAS.GPA, 4) AS GPA,
+  RESUMO_DISCIPLINAS.TOTAL_ALUNOS,
+  RESUMO_DISCIPLINAS.TOTAL_OFERTAS
+FROM RESUMO_DISCIPLINAS
+CROSS JOIN LIMITES
+WHERE RESUMO_DISCIPLINAS.GPA = LIMITES.GPA_MIN
+   OR RESUMO_DISCIPLINAS.GPA = LIMITES.GPA_MAX
+ORDER BY GPA, NUMERO
+```
+
+A disciplina mais difícil é **STAT 431 - Introduction to the Theory of Probability**, com GPA médio igual a **2,8916**.
+
+O maior GPA é **4,0000**, com empate entre as seguintes disciplinas:
+
+-   **STAT 628 - Data Science Practicum**;
+-   **STAT 811 - Sample Survey Theory and Method**;
+-   **STAT 834 - Empir Proc&Semiparmtrc Infernc**;
+-   **STAT 841 - Nonparametric Statistics and Machine Learning Methods**.
+
+Logo, as quatro disciplinas são classificadas como as mais fáceis segundo a média dos GPAs de seus oferecimentos.
+
+4.  Desconecte do banco de dados.
+
+```{r}
+dbDisconnect(conn)
+```
+
+```{r}
+Sys.setenv(TZ = "America/Sao_Paulo")
+Sys.time()
+```

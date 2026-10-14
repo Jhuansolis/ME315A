@@ -1,0 +1,99 @@
+---
+title: "Laboratório 2: Dados Relacionais com Polars"
+author: "Jhuan Marcos Nunes Solis Silva - 266349"
+format: pdf
+engine: knitr
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r}
+# Disponibiliza o Polars no ambiente Python
+reticulate::py_require("polars")
+```
+
+## Carregamento dos dados
+
+```{python}
+import polars as pl
+
+# Lê os arquivos da pasta do projeto
+basics = pl.scan_csv(
+    "title.basics0.tsv", separator="\t", null_values=r"\N", quote_char=None
+)
+ratings = pl.scan_csv(
+    "title.ratings.tsv", separator="\t", null_values=r"\N", quote_char=None
+)
+principals = pl.scan_csv(
+    "title.principals0.tsv", separator="\t", null_values=r"\N", quote_char=None
+)
+
+# Relaciona filmes e avaliações
+filmes_avaliados = (
+    basics
+    .filter(pl.col("titleType") == "movie")
+    .select("tconst", "primaryTitle", "genres")
+    .join(ratings.select("tconst", "averageRating", "numVotes"), on="tconst")
+)
+```
+
+## Atividade 1 — Cinco filmes com maiores notas
+
+Em caso de empate na nota, prevalece o maior número de votos.
+
+```{python}
+top5 = (
+    filmes_avaliados
+    .select("primaryTitle", "averageRating", "numVotes")
+    .sort(["averageRating", "numVotes"], descending=[True, True])
+    .head(5)
+    .collect()
+)
+print(top5)
+```
+
+## Atividade 2 — Gênero mais frequente entre filmes com nota maior que 8
+
+```{python}
+genero_mais_frequente = (
+    filmes_avaliados
+    .filter(pl.col("averageRating") > 8)
+    .select(pl.col("genres").str.split(",").explode().alias("genero"))
+    .filter(pl.col("genero").is_not_null())
+    .group_by("genero")
+    .agg(pl.len().alias("frequencia"))
+    .sort("frequencia", descending=True)
+    .head(1)
+    .collect()
+)
+print(genero_mais_frequente)
+```
+
+## Atividade 3 — Três atores/atrizes com mais filmes de nota maior que 7,5
+
+```{python}
+top3_atores = (
+    principals
+    .filter(pl.col("category").is_in(["actor", "actress"]))
+    .join(
+        filmes_avaliados
+        .filter(pl.col("averageRating") > 7.5)
+        .select("tconst"),
+        on="tconst"
+    )
+    .group_by("nconst")
+    .agg(pl.col("tconst").n_unique().alias("participacoes"))
+    .sort(["participacoes", "nconst"], descending=[True, False])
+    .head(3)
+    .collect()
+)
+print(top3_atores)
+```
+
+## Data e hora da execução
+
+```{r}
+print(format(Sys.time(), "%d/%m/%Y %H:%M:%S %Z", tz = "America/Sao_Paulo"))
+```
